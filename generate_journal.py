@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
 """
-Bites Paper Journal Generator v3
-Lulu Pocket Book format (4.25" × 6.875" / 108×175mm), 80 pages, perfect-bound
-Lulu pod_package_id target: 0425X0687.FC.STD.PB.060UW444.MXX
+Bites Paper Journal Generator v4 - Lulu-compliant two-file output
+
+Lulu Pocket Book format (4.25" × 6.875"), 78 interior pages + separate cover
+spread, with 0.125" bleed on every edge.
+
+Lulu pod_package_id: 0425X0687FCSTDPB060UW444MXX
   (4.25×6.875 / Full-Color interior / Standard / Perfect-Bound /
    60# uncoated white / Matte cover)
+
+Outputs:
+  - outbound/bites-paper-interior.pdf  (78 pages, 4.5×7.125" with bleed)
+  - outbound/bites-paper-cover.pdf     (1 page, ~8.99×7.125" wide spread)
+
+Layout strategy: existing draw functions operate in TRIM coordinates
+(0,0 = bottom-left of trim region). For interior pages, we translate
+the canvas by (BLEED, BLEED) so trim coordinates stay valid while the
+page extends 0.125" outside on every edge.
 """
 
 from reportlab.lib.units import mm, inch
@@ -13,11 +25,25 @@ from reportlab.lib.colors import HexColor
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# Lulu Pocket Book dimensions (4.25 × 6.875 inches exactly)
-# 21% larger by area than the original A6 design - more shelf presence
-PAGE_WIDTH = 4.25 * inch    # 107.95mm
-PAGE_HEIGHT = 6.875 * inch  # 174.625mm
+# Lulu Pocket Book dimensions
+PAGE_WIDTH = 4.25 * inch    # 107.95mm trim width
+PAGE_HEIGHT = 6.875 * inch  # 174.625mm trim height
 PAGE_SIZE = (PAGE_WIDTH, PAGE_HEIGHT)
+
+# Bleed: 0.125" on every edge (Lulu requirement)
+BLEED = 0.125 * inch
+INTERIOR_PAGE_W = PAGE_WIDTH + 2 * BLEED   # 4.5" = 11.43cm
+INTERIOR_PAGE_H = PAGE_HEIGHT + 2 * BLEED  # 7.125" = 18.10cm
+INTERIOR_PAGE_SIZE = (INTERIOR_PAGE_W, INTERIOR_PAGE_H)
+
+# Cover spread: back + spine + front, with bleed on all four edges
+# Spine width formula: pages/444 + 0.06 inches (Lulu's calc for 60# white)
+INTERIOR_PAGE_COUNT = 78
+SPINE_WIDTH = INTERIOR_PAGE_COUNT / 444 + 0.06
+SPINE_W = SPINE_WIDTH * inch
+COVER_SPREAD_W = (2 * BLEED) + (2 * PAGE_WIDTH) + SPINE_W
+COVER_SPREAD_H = PAGE_HEIGHT + 2 * BLEED
+COVER_SPREAD_SIZE = (COVER_SPREAD_W, COVER_SPREAD_H)
 
 # Brand colors
 TERRACOTTA = HexColor('#C84B31')
@@ -36,11 +62,63 @@ def register_fonts():
     pdfmetrics.registerFont(TTFont('Inter-Medium', 'fonts/Inter-Medium.ttf'))
     pdfmetrics.registerFont(TTFont('Inter-Bold', 'fonts/Inter-Bold.ttf'))
 
-def draw_cover(c):
-    """Front cover: terracotta with lower-third wordmark + hairline rule directly above + N° mark"""
-    c.setFillColor(TERRACOTTA)
-    c.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT, fill=1, stroke=0)
+def draw_cover_spread(c):
+    """Lulu cover spread: back-cover | spine | front-cover, all on one wide page.
 
+    Layout (left to right on the page):
+        [bleed_left][BACK COVER region][SPINE region][FRONT COVER region][bleed_right]
+
+    The whole page is full-bleed terracotta. Back, spine, and front share
+    the same color so the spine is invisible until you actually look at the
+    book edge-on. Wordmark + Nº 01 sit on the FRONT COVER region. URL +
+    brand mark sit on the BACK COVER region. Spine carries vertical wordmark.
+    """
+    # Full-bleed terracotta everywhere
+    c.setFillColor(TERRACOTTA)
+    c.rect(0, 0, COVER_SPREAD_W, COVER_SPREAD_H, fill=1, stroke=0)
+
+    # Compute region X positions (left edge of each region in cover-spread coords)
+    back_left = BLEED                          # back cover starts after left bleed
+    back_right = BLEED + PAGE_WIDTH            # back cover trim edge
+    spine_left = back_right                    # spine starts at back trim edge
+    spine_right = spine_left + SPINE_W         # spine ends
+    front_left = spine_right                   # front trim edge
+    front_right = front_left + PAGE_WIDTH      # front cover trim ends
+
+    # ============= FRONT COVER (right side of spread) =============
+    # Save state, translate to front trim origin so existing layout math works
+    c.saveState()
+    c.translate(front_left, BLEED)
+    _draw_front_cover_content(c)
+    c.restoreState()
+
+    # ============= BACK COVER (left side of spread) =============
+    c.saveState()
+    c.translate(back_left, BLEED)
+    _draw_back_cover_content(c)
+    c.restoreState()
+
+    # ============= SPINE =============
+    # Vertical wordmark on the spine. Only render if spine is wide enough (>0.2")
+    # US convention: spine text reads TOP-TO-BOTTOM when book lies face-up
+    # (i.e. when laying the book flat with front cover up and you tilt your
+    # head right, the spine reads correctly). This means -90° rotation, not +90.
+    if SPINE_WIDTH >= 0.2:
+        c.saveState()
+        spine_cx = (spine_left + spine_right) / 2
+        page_cy = COVER_SPREAD_H / 2
+        c.translate(spine_cx, page_cy)
+        c.rotate(-90)  # was +90; corrected for US top-to-bottom spine reading
+        c.setFillColor(CREAM)
+        c.setFont('Fraunces-SemiBold', 7)
+        c.drawCentredString(0, -2, "Bites Paper")
+        c.restoreState()
+
+    c.showPage()
+
+def _draw_front_cover_content(c):
+    """Front cover artwork - operates in trim coordinates (0,0 to PAGE_WIDTH, PAGE_HEIGHT).
+    Called from draw_cover_spread after translation; safe content area only."""
     # Wordmark "Bites Paper" at optical center (~45% from top).
     # Penguin/NYRB classic position - title sits in upper-middle, void
     # below reads as page bottom margin (functional), void above is the
@@ -75,8 +153,34 @@ def draw_cover(c):
     # Single hairline horizontal rule, not three vertical bars
     c.setLineWidth(0.4)
     c.line(PAGE_WIDTH - 22 * mm, 12 * mm, PAGE_WIDTH - 15 * mm, 12 * mm)
+    # NOTE: no showPage here - this draws into the front-cover region of the spread
 
-    c.showPage()
+def _draw_back_cover_content(c):
+    """Back cover artwork - operates in trim coordinates after translation.
+    Mirror of front: same terracotta field with cream brand mark + URL."""
+    # Cream-colored brand mark + URL centered on back cover
+    c.setFillColor(CREAM)
+    c.setFont('Inter-Medium', 8)
+    # URL centered horizontally, ~30% up from bottom
+    c.drawCentredString(PAGE_WIDTH / 2, 30 * mm, "journal.bites.kitchen")
+
+    # Single hairline rule above URL (mirrors front cover's eyebrow rule)
+    c.setStrokeColor(CREAM)
+    c.setLineWidth(0.4)
+    rule_w = 30 * mm
+    rule_x = (PAGE_WIDTH - rule_w) / 2
+    c.line(rule_x, 35 * mm, rule_x + rule_w, 35 * mm)
+
+    # Optional tagline above the rule
+    c.setFillColor(CREAM)
+    c.setFont('Fraunces-Regular', 9)
+    c.drawCentredString(PAGE_WIDTH / 2, 40 * mm, "For the bites you'd rather hold.")
+
+    # Issue/date line below URL - ties back cover to the front cover's Nº 01
+    # Small unifying mark, doesn't disturb the restraint
+    c.setFont('Inter-Medium', 6)
+    c.setFillColor(CREAM)
+    c.drawCentredString(PAGE_WIDTH / 2, 25 * mm, "Nº 01  ·  2026")
 
 def draw_title_page(c):
     """Title page: Fraunces Black centered with tagline"""
@@ -357,95 +461,89 @@ def draw_reflection_page(c):
     
     c.showPage()
 
-def draw_back_cover(c):
-    """Back cover: brand mark + URL"""
-    c.setFillColor(CREAM)
-    c.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT, fill=1, stroke=0)
-    
-    # Brand mark (three vertical bars)
-    mark_x = PAGE_WIDTH / 2 - 3
-    mark_y = PAGE_HEIGHT / 2 + 10 * mm
-    c.setStrokeColor(TERRACOTTA)
-    c.setLineWidth(2)
-    for i in range(3):
-        c.line(mark_x + i * 4, mark_y, mark_x + i * 4, mark_y + 12)
-    
-    # URL
-    c.setFont('Inter-Medium', 9)
-    c.setFillColor(INK_SOFT)
-    c.drawCentredString(PAGE_WIDTH / 2, PAGE_HEIGHT / 2 - 5 * mm, "journal.bites.kitchen")
-    
+def _interior_page(c, draw_fn, *args):
+    """Helper: render an interior page with bleed translation.
+
+    Each interior page is INTERIOR_PAGE_W × INTERIOR_PAGE_H (with bleed).
+    Existing draw functions assume trim coordinates (0,0 to PAGE_WIDTH,
+    PAGE_HEIGHT). We translate by (BLEED, BLEED) so trim-coord drawing
+    lands inside the trim area, with the bleed extending the page outside.
+
+    Note: showPage() resets the graphics state stack, so we cannot use
+    saveState/restoreState to bracket the call. Instead we translate,
+    let draw_fn call its own showPage, then on the next page the canvas
+    is at the origin again - we'll re-translate at the start of the
+    next page.
+    """
+    c.translate(BLEED, BLEED)
+    draw_fn(c, *args)
+    # showPage() inside draw_fn already moved to next page;
+    # next call to _interior_page will re-translate cleanly.
+
+def generate_interior():
+    """Generate the 78-page interior PDF with bleed.
+
+    Front matter (4 pages): title, belongs-to, how-to, blank-spacer
+    Body (60 pages): 30 bite spreads
+    Back matter (14 pages): index 2, year-in-review 2, reflection 10
+    Total: 78 pages (matches pod_package interior page count)
+    """
+    output_path = "outbound/bites-paper-interior.pdf"
+    c = canvas.Canvas(output_path, pagesize=INTERIOR_PAGE_SIZE)
+    c.setTitle("Bites Paper - The Field Journal (Interior)")
+    c.setAuthor("Bites")
+
+    # Front matter (4 pages)
+    _interior_page(c, draw_title_page)
+    _interior_page(c, draw_belongs_to)
+    _interior_page(c, draw_how_to_use)
+    # Blank spacer page (preserves recto-verso for the first bite spread)
     c.showPage()
+
+    # 30 bite spreads (60 pages)
+    page_counter = 5  # for visible page numbers (5 = first right page)
+    for i in range(1, 31):
+        _interior_page(c, draw_bite_spread_left, i)
+        _interior_page(c, draw_bite_spread_right, page_counter + 1)
+        page_counter += 2
+
+    # Index (2 pages)
+    for i in range(1, 3):
+        _interior_page(c, draw_index_page, i)
+
+    # Year in review (2 pages)
+    for i in range(1, 3):
+        _interior_page(c, draw_year_in_review, i)
+
+    # Reflection / extra notes (10 pages padding to 78)
+    for i in range(10):
+        _interior_page(c, draw_reflection_page)
+
+    c.save()
+    print(f"✓ Interior: {output_path} ({c.getPageNumber() - 1} pages)")
+    return c.getPageNumber() - 1
+
+def generate_cover():
+    """Generate the cover spread PDF (single wide page)."""
+    output_path = "outbound/bites-paper-cover.pdf"
+    c = canvas.Canvas(output_path, pagesize=COVER_SPREAD_SIZE)
+    c.setTitle("Bites Paper - The Field Journal (Cover)")
+    c.setAuthor("Bites")
+    draw_cover_spread(c)
+    c.save()
+    print(f"✓ Cover: {output_path} ({COVER_SPREAD_W/inch:.4f}\" × {COVER_SPREAD_H/inch:.4f}\", spine {SPINE_WIDTH:.4f}\")")
 
 def generate_journal():
-    """Generate the complete 80-page journal at Pocket Book trim"""
+    """Generate both Lulu-compliant PDFs."""
     register_fonts()
-
-    output_path = "outbound/bites-paper-journal-v3-pocketbook.pdf"
-    c = canvas.Canvas(output_path, pagesize=PAGE_SIZE)
-    
-    # Metadata
-    c.setTitle("Bites Paper - The Field Journal")
-    c.setAuthor("Bites")
-    c.setSubject("Food Memory Journal")
-    
-    print("Generating journal v1...")
-    
-    # Front cover (page 1)
-    draw_cover(c)
-    print("✓ Front cover")
-    
-    # Title page (page 2)
-    draw_title_page(c)
-    print("✓ Title page")
-    
-    # Belongs to (page 3)
-    draw_belongs_to(c)
-    print("✓ Belongs to page")
-    
-    # How to use (page 4)
-    draw_how_to_use(c)
-    print("✓ How to use")
-    
-    # 30 bite spreads (pages 5-64 = 60 pages)
-    page_counter = 5
-    for i in range(1, 31):
-        draw_bite_spread_left(c, i)
-        draw_bite_spread_right(c, page_counter + 1)
-        page_counter += 2
-        if i % 10 == 0:
-            print(f"✓ Bite spreads {i-9}-{i}")
-    
-    # Index (2 pages: 65-66)
-    for i in range(1, 3):
-        draw_index_page(c, i)
-    print("✓ Index (2 pages)")
-    
-    # Year in review (2 pages: 67-68)
-    for i in range(1, 3):
-        draw_year_in_review(c, i)
-    print("✓ Year in review (2 pages)")
-    
-    # Reflection pages (10 pages, pads total to 80 with covers + inside-back blank)
-    for i in range(10):
-        draw_reflection_page(c)
-    print("✓ Reflection pages (10 pages)")
-    
-    # Back cover (page 79-80, we'll do one page as inside back, one as actual back)
-    # Inside back cover - blank cream
-    c.setFillColor(CREAM)
-    c.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT, fill=1, stroke=0)
-    c.showPage()
-    
-    # Actual back cover (page 80)
-    draw_back_cover(c)
-    print("✓ Back cover")
-    
-    c.save()
-    print(f"\n✓ Journal saved: {output_path}")
-    print(f"  Total pages: {c.getPageNumber()}")
-    print(f"  Dimensions: {PAGE_WIDTH/mm:.1f} × {PAGE_HEIGHT/mm:.1f} mm (A6)")
-    return c.getPageNumber()
+    pages = generate_interior()
+    generate_cover()
+    print(f"\n✓ Lulu submission ready:")
+    print(f"  pod_package_id: 0425X0687FCSTDPB060UW444MXX")
+    print(f"  page_count: {pages}")
+    print(f"  interior: outbound/bites-paper-interior.pdf")
+    print(f"  cover:    outbound/bites-paper-cover.pdf")
+    return pages
 
 if __name__ == "__main__":
     generate_journal()
