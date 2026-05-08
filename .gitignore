@@ -1,0 +1,26 @@
+# Font bloat from Inter package extras
+fonts/inter.zip
+fonts/extras/
+fonts/web/
+fonts/Inter.ttc
+fonts/InterVariable*.ttf
+fonts/*.woff2
+
+# Keep only the TTFs we actually register in ReportLab
+!fonts/Fraunces-Regular.ttf
+!fonts/Fraunces-SemiBold.ttf
+!fonts/Fraunces-Black.ttf
+!fonts/Inter-Regular.ttf
+!fonts/Inter-Medium.ttf
+!fonts/Inter-Bold.ttf
+!fonts/LICENSE.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# Local
+.DS_Store
+.env
+*.log
+secrets/
